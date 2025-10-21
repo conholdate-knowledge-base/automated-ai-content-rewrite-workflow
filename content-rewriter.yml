@@ -1,0 +1,192 @@
+name: Automated Content Rewriting
+
+on:
+  # Scheduled to run daily at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * *'
+  
+  # Allow manual triggering for testing
+  workflow_dispatch:
+    inputs:
+      max_articles:
+        description: 'Maximum number of articles to process (will be randomly selected between 2-5)'
+        required: false
+        default: '5'
+        type: string
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  rewrite-content:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git log analysis
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      
+      - name: Install Node.js dependencies
+        run: |
+          cd .github/scripts
+          npm install
+      
+      - name: Configure Git
+        run: |
+          git config --global user.name "Assad Mahmood"
+          git config --global user.email "assadvirgo@gmail.com"
+      
+      - name: Select articles for rewriting
+        id: select-articles
+        run: |
+          cd .github/scripts
+          node article-selector.js
+          
+          # Check if any articles were selected
+          if [ ! -f "../../selected-articles.json" ]; then
+            echo "No articles selected for rewriting"
+            echo "selected=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Read the selected articles
+          SELECTED=$(cat ../../selected-articles.json | jq -c '.articles')
+          echo "selected=true" >> $GITHUB_OUTPUT
+          echo "articles=$SELECTED" >> $GITHUB_OUTPUT
+          
+          # Create summary for PR description
+          SUMMARY=$(cat ../../selected-articles.json | jq -r '.summary | "Total: \(.total), Java: \(.java), .NET: \(.net)"')
+          echo "summary=$SUMMARY" >> $GITHUB_OUTPUT
+      
+      - name: Prepare branch name and date
+        if: steps.select-articles.outputs.selected == 'true'
+        id: create-branch
+        run: |
+          CURRENT_DATE=$(date +%Y-%m-%d)
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          BRANCH_NAME="content-update-$CURRENT_DATE-$(date +%s)"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "current_date=$CURRENT_DATE" >> $GITHUB_OUTPUT
+          echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "Prepared branch name: $BRANCH_NAME"
+      
+      - name: Process articles with LLM
+        if: steps.select-articles.outputs.selected == 'true'
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          SELECTED_ARTICLES: ${{ steps.select-articles.outputs.articles }}
+        run: |
+          cd .github/scripts
+          node content-processor.js
+      
+      - name: Generate PR description
+        if: steps.select-articles.outputs.selected == 'true'
+        id: pr-description
+        run: |
+          # Read processing report
+          REPORT=$(cat .github/scripts/processing-report.json)
+          
+          # Generate PR description
+          cat > pr-description.md << EOF
+          ## 🤖 Automated Content Enhancement
+          
+          This PR contains automated improvements to knowledge base articles using AI-powered rewriting.
+          
+          ### 📊 Summary
+          - **Articles processed**: ${{ steps.select-articles.outputs.summary }}
+          - **Branch**: \`${{ steps.create-branch.outputs.branch_name }}\`
+          - **Timestamp**: ${{ steps.create-branch.outputs.timestamp }}
+          
+          ### 📝 Changes Made
+          - ✅ Updated `lastmod` field to current date
+          - ✅ Enhanced opening paragraphs for better readability
+          - ✅ Improved closing paragraphs for SEO
+          - ✅ Preserved all technical content, links, and code samples
+          
+          ### 📄 Modified Files
+          EOF
+          
+          # Add file list from processing report
+          echo "$REPORT" | jq -r '.files[] | select(.status == "success") | "- `\(.fileName)` (\(.platform | ascii_upcase)) - \(.changes | join(", "))"' >> pr-description.md
+          
+          # Add any errors if they exist
+          ERROR_COUNT=$(echo "$REPORT" | jq '[.files[] | select(.status == "error")] | length')
+          if [ "$ERROR_COUNT" -gt 0 ]; then
+            echo -e "\n### ⚠️ Processing Errors" >> pr-description.md
+            echo "$REPORT" | jq -r '.files[] | select(.status == "error") | "- `\(.fileName)` - \(.error)"' >> pr-description.md
+          fi
+          
+          echo -e "\n### ✅ Review Checklist" >> pr-description.md
+          cat >> pr-description.md << 'EOF'
+          - [ ] Content accuracy maintained
+          - [ ] Technical details preserved
+          - [ ] Links and references intact
+          - [ ] Code samples unchanged
+          - [ ] SEO improvements look good
+          - [ ] No broken markdown formatting
+          
+          ---
+          *This PR was automatically generated by the Content Rewriting workflow.*
+          EOF
+      
+      - name: Prepare commit message
+        if: steps.select-articles.outputs.selected == 'true'
+        id: commit-message  
+        run: |
+          COMMIT_MSG="Automated content enhancement - ${{ steps.create-branch.outputs.current_date }}
+          
+          - Enhanced readability and SEO for selected articles
+          - Updated lastmod fields
+          - Preserved all technical content and code samples
+          
+          Articles processed: ${{ steps.select-articles.outputs.summary }}"
+          
+          echo "commit_message<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMIT_MSG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Create Pull Request
+        if: steps.select-articles.outputs.selected == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: ${{ steps.commit-message.outputs.commit_message }}
+          title: "🤖 Automated Content Enhancement - ${{ steps.create-branch.outputs.current_date }}"
+          body-path: pr-description.md
+          branch: ${{ steps.create-branch.outputs.branch_name }}
+          base: master
+          labels: |
+            automated-content-update
+            needs-review
+            content-enhancement
+          reviewers: assadvirgo
+          draft: false
+          delete-branch: true
+      
+      - name: Output results
+        if: always()
+        run: |
+          if [ "${{ steps.select-articles.outputs.selected }}" == "true" ]; then
+            echo "✅ Content rewriting workflow completed successfully"
+            echo "📋 Branch created: ${{ steps.create-branch.outputs.branch_name }}"
+            echo "📊 Articles: ${{ steps.select-articles.outputs.summary }}"
+          else
+            echo "ℹ️ No articles found for rewriting (all articles are recent)"
+          fi
+      
+      - name: Upload artifacts
+        if: steps.select-articles.outputs.selected == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rewriting-reports
+          path: |
+            selected-articles.json
+            .github/scripts/processing-report.json
+          retention-days: 30
