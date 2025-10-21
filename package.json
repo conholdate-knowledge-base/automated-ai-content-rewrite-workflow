@@ -1,0 +1,28 @@
+{
+  "name": "kb-content-rewriter",
+  "version": "1.0.0",
+  "description": "Automated content rewriting system for Conholdate Knowledge Base",
+  "main": "content-processor.js",
+  "scripts": {
+    "select": "node article-selector.js",
+    "process": "node content-processor.js",
+    "validate": "node content-validator.js",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "dependencies": {
+    "node-fetch": "^2.6.7"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "content",
+    "rewriting",
+    "llm",
+    "automation",
+    "hugo",
+    "markdown"
+  ],
+  "author": "Conholdate Knowledge Base Team",
+  "license": "MIT"
+}
